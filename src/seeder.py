@@ -46,8 +46,8 @@ class FormbricksSeeder:
         self.environment_id = environment_id or config.FORMBRICKS_ENVIRONMENT_ID
         
         # API endpoints
-        self.management_api = f"{self.base_url}"
-        self.client_api = f"{self.base_url}/client"
+        self.management_api = f"{self.base_url}/api/v1/management"
+        self.client_api = f"{self.base_url}/api/v1/client"
         
         # Track created resources for dependency resolution
         self.created_users: Dict[str, str] = {}  # email -> id
@@ -146,11 +146,10 @@ class FormbricksSeeder:
     
     def seed_users(self, users: UserList) -> None:
         """
-        Seed users via Management API.
+        Seed users via Client API.
         
-        Note: Formbricks might not have a direct "create user" API.
-        This is a placeholder - actual implementation depends on API availability.
-        May need to use team invitations or other mechanisms.
+        Note: User creation requires userId and proper authentication.
+        Users can also be created through team invitations or other mechanisms.
         
         Args:
             users: Users to create
@@ -168,18 +167,16 @@ class FormbricksSeeder:
             
             for user in users.users:
                 try:
-                    # Note: This endpoint is a placeholder
-                    # Actual Formbricks API might use different approach
-                    # (e.g., team invitations, organization members, etc.)
-                    
-                    # Attempt to create via team members endpoint
-                    response = self._management_request(
+                    # Create/identify user via Client API
+                    response = self._client_request(
                         "POST",
-                        f"environments/{self.environment_id}/members",
+                        f"{self.environment_id}/user",
                         data={
-                            "email": user.email,
-                            "name": user.name,
-                            "role": user.role,
+                            "userId": user.email,  # Use email as unique user ID
+                            "attributes": {
+                                "plan": "free",
+                                "name": user.name,
+                            }
                         }
                     )
                     
@@ -192,14 +189,27 @@ class FormbricksSeeder:
                     )
                     
                 except requests.exceptions.HTTPError as e:
-                    # User might already exist or endpoint not available
-                    # Store email as fallback ID
+                    # User creation might not be available in all configurations
+                    # Store email as fallback ID for responses
                     self.created_users[user.email] = user.email
                     
-                    progress.console.print(
-                        f"  ⚠ {user.name}: {e.response.status_code}",
-                        style="yellow"
-                    )
+                    if e.response.status_code == 403:
+                        # 403 Forbidden - endpoint may not be enabled
+                        progress.console.print(
+                            f"  ⚠ {user.name}: Endpoint not available (403)",
+                            style="yellow"
+                        )
+                    elif e.response.status_code == 404:
+                        # 404 Not Found - likely incorrect path or unsupported API
+                        progress.console.print(
+                            f"  ⚠ {user.name}: Endpoint not found (404). Verify '/api/v1/client/{self.environment_id}/user' exists and Client API is enabled.",
+                            style="yellow"
+                        )
+                    else:
+                        progress.console.print(
+                            f"  ⚠ {user.name}: {e.response.status_code}",
+                            style="yellow"
+                        )
                 
                 progress.advance(task)
                 time.sleep(0.5)  # Rate limiting
@@ -231,11 +241,13 @@ class FormbricksSeeder:
                     
                     response = self._management_request(
                         "POST",
-                        f"environments/{self.environment_id}/surveys",
-                        data=survey_data
+                        "surveys",
+                        data={**survey_data, "environmentId": self.environment_id}
                     )
                     
-                    created = response.json()
+                    response_data = response.json()
+                    # Survey data is wrapped in a "data" field
+                    created = response_data.get("data", response_data)
                     api_survey_id = created.get("id")
                     
                     # Store mapping
@@ -300,10 +312,10 @@ class FormbricksSeeder:
                     # Prepare response payload
                     response_data = self._prepare_response_payload(response, api_survey_id)
                     
-                    # Submit via Client API
-                    self._client_request(
+                    # Submit via Management API
+                    self._management_request(
                         "POST",
-                        f"{self.environment_id}/displays/{api_survey_id}/responses",
+                        "responses",
                         data=response_data
                     )
                     
@@ -355,36 +367,43 @@ class FormbricksSeeder:
             question: Question to convert
             
         Returns:
-            API-compatible question
+            API-compatible question with i18n strings
         """
         payload = {
             "id": question.id,
             "type": question.type,
-            "headline": question.headline,
+            "headline": {"default": question.headline},
             "required": question.required,
         }
         
-        # Add optional fields if present
+        # Add subheader with i18n format if present
         if question.subheader:
-            payload["subheader"] = question.subheader
+            payload["subheader"] = {"default": question.subheader}
         
+        # OpenText questions need inputType
+        if question.type == "openText":
+            payload["inputType"] = "text"
+        
+        # Multiple choice questions need choices
         if question.choices:
             payload["choices"] = [
-                {"id": c.id, "label": c.label}
+                {"id": c.id, "label": {"default": c.label}}
                 for c in question.choices
             ]
         
+        # Rating questions need scale and range
         if question.scale:
             payload["scale"] = question.scale
         
         if question.range:
             payload["range"] = question.range
         
+        # NPS/Rating scale labels
         if question.lowerLabel:
-            payload["lowerLabel"] = question.lowerLabel
+            payload["lowerLabel"] = {"default": question.lowerLabel}
         
         if question.upperLabel:
-            payload["upperLabel"] = question.upperLabel
+            payload["upperLabel"] = {"default": question.upperLabel}
         
         return payload
     
