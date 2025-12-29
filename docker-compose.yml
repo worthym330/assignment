@@ -1,0 +1,140 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    restart: always
+    container_name: formbricks-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: formbricks
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: always
+    container_name: formbricks-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: [ "CMD", "ollama", "list" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    restart: always
+    container_name: formbricks-mailhog
+    ports:
+      - "1025:1025" # SMTP server
+      - "8025:8025" # Web UI
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8025" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    image: nginx:latest
+    restart: always
+    container_name: formbricks-nginx
+    ports:
+      - "3000:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - formbricks
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "https://localhost/", "--insecure" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  formbricks:
+    image: formbricks/formbricks:latest
+    restart: always
+    container_name: formbricks-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailhog:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    environment:
+      # Database
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/formbricks
+
+      # NextAuth
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-supersecretkey123456}
+      NEXTAUTH_URL: http://localhost:3000
+
+      # Security
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      CRON_SECRET: ${CRON_SECRET:-cron_secret_key_for_internal_tasks}
+
+      # Application
+      WEBAPP_URL: http://localhost:3000
+      SHORT_URL_BASE: http://localhost:3000
+      NEXT_PUBLIC_WEBAPP_URL: http://localhost:3000
+
+      # Disable HTTPS requirement for local development
+      REQUIRE_HTTPS: "false"
+      TRUST_PROXY: "true"
+      ALLOW_INSECURE_HTTP: "true"
+      SKIP_ENV_VALIDATION: "true"
+      IS_FORMBRICKS_CLOUD: "0"
+      ENTERPRISE_LICENSE_KEY: ""
+
+      # Email (disabled for local dev)
+      MAIL_FROM: techspikereach@gmail.com
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 465
+      SMTP_USER: techspikereach@gmail.com
+      SMTP_PASSWORD: pvgz tqpg ozqk ujkt
+      SMTP_SECURE_ENABLED: 1
+
+      # Features
+      PRIVACY_URL:
+      TERMS_URL:
+      IMPRINT_URL:
+      GITHUB_AUTH_ENABLED: 0
+      GOOGLE_AUTH_ENABLED: 0
+
+      # Disable telemetry for local development
+      TELEMETRY_DISABLED: 1
+
+      # Development mode (disables HTTPS requirement)
+      NODE_ENV: development
+    volumes:
+      - uploads:/home/nextjs/apps/web/uploads
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:3000" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres_data:
+    driver: local
+  uploads:
+    driver: local
+  ollama_data:
+    driver: local
+
+networks:
+  default:
+    name: formbricks-network
